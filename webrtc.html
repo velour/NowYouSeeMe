@@ -1,0 +1,184 @@
+<html>
+<head>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/0.3.16/peer.min.js"></script>
+</head>
+<body>
+<div>
+	My Peer-ID: <input type="text" id="myPeerId" disabled value=""> Connection Peer-ID: <input type="text" id="peerId" value=""> Nick: <input type="text" id="nick" value=""><button id="connect">connect</button>
+</div>
+<div>
+	<textarea id="chat" rows="8" cols="80"></textarea>
+</div>
+<div>
+	<input type="text" id="message" value=""><button id="send">send</button>
+</div>
+<div>
+	Share Video: <input type="checkbox" id="shareVideo" checked/> Share Audio: <input type="checkbox" id="shareAudio" checked/>
+</div>
+<div id="videos">
+	<video id="localVideo" width="150" height="150" muted></video>
+</div>
+
+
+<script>
+window.setInterval(function() {
+	var closed = [];
+	for(var peerId in connections) {
+		if(!connections[peerId].data.open && connections[peerId].status != "connecting") {
+			closed.push(peerId);
+		}
+	}
+
+	for(var peerId in closed) {
+		var video = document.getElementById("video-" + closed[peerId]);
+		if(video) {
+			video.parentNode.removeChild(video);
+		}
+
+		document.getElementById("chat").value += connections[closed[peerId]].nick + " disconnected\n";
+
+		delete connections[closed[peerId]];
+	}
+}, 1000);
+
+var localStreams = null;
+navigator.mediaDevices.getUserMedia({ audio: true, video: {width: 100, height: 100} }).then((stream) => {
+	localStreams = stream;
+	var localVideoElement = document.getElementById("localVideo");
+	localVideoElement.mute = true;
+	localVideoElement.srcObject = localStreams;
+	localVideoElement.play();
+});
+
+document.getElementById('shareVideo').addEventListener('change', (event) => {
+	localStreams.getVideoTracks()[0].enabled = event.target.checked;
+});
+
+document.getElementById('shareAudio').addEventListener('change', (event) => {
+	localStreams.getAudioTracks()[0].enabled = event.target.checked;
+})
+
+var peer = new Peer({key: 'lwjd5qra8257b9'});
+
+var connections = {};
+
+var myPeerId = null;
+var myNick = null;
+
+peer.on('open', (id) => {
+	myPeerId = id;
+	document.getElementById("myPeerId").value = myPeerId;
+});
+
+function connectToPeer(peerId, doCall) {
+	if(connections[peerId] || peerId == myPeerId) {
+		if(doCall) {
+			connections[peerId].call = peer.call(peerId, localStreams);
+			connections[peerId].call.on('stream', handleStreamReceived.bind(peerId));
+			connections[peerId].data.on('error', (err) => { console.log(err); });
+		}
+		return;
+	}
+
+	connections[peerId] = {
+		status : "connecting",
+		data : peer.connect(peerId),
+		call : null,
+		nick : "",
+	};
+
+	connections[peerId].data.on('error', function(err) { console.log(err); connections[this].status = "failed"; }.bind(peerId));
+	connections[peerId].data.on('open', function() {
+		var peerId = this.peer;
+		var peers = "PEERS:";
+		for(var peerId in connections) {
+			if(peerId != myPeerId) {
+				peers += " " + peerId;
+			}
+		}
+
+		connections[this].status = "connected";
+		connections[this].data.send("NICK: " + myPeerId + " " + myNick);
+		connections[this].data.send(peers);
+
+		if(doCall) {
+			connections[this].call = peer.call(peerId, localStreams);
+			connections[this].call.on('stream', handleStreamReceived.bind(peerId));
+			connections[this].data.on('error', (err) => { console.log(err); });
+		}
+	}.bind(peerId));
+}
+
+function handleStreamReceived(remoteStream) {
+	console.log("got stream");
+		var video = document.createElement('video');
+		video.id = "video-" + this;
+		video.width = 150;
+		video.height = 150;
+		video.srcObject = remoteStream;
+		video.play();
+		document.getElementById("videos").appendChild(video);
+}
+
+function disableConnectionControls() {
+	document.getElementById("connect").disabled = true;
+	document.getElementById("peerId").disabled = true;
+	document.getElementById("nick").disabled = true;
+	myNick = document.getElementById("nick").value;
+}
+
+function handleDataReceived(data) {
+	if(data.startsWith("NICK:")) {
+		var nick = data.split(" ");
+		if(connections[nick[1]].nick == "") {
+			connections[nick[1]].nick = nick[2];
+			document.getElementById("chat").value += "Connected to " + nick[2] + "\n";
+		}
+	} else if(data.startsWith("PEERS:")) {
+		var peers = data.split(" ");
+		for(var i = 1; i < peers.length; i++) {
+			var peerId = peers[i];
+			connectToPeer(peerId, true);
+		}
+	} else {
+		document.getElementById("chat").value += data + "\n";
+	}
+}
+
+function handleCall(call) {
+	var peerId = call.peer;
+	if(!connections[peerId].call) {
+		call.answer(localStreams);
+		connections[peerId].call = call;
+		connections[peerId].call.on('stream', handleStreamReceived.bind(peerId));
+	}
+}
+
+document.getElementById("connect").addEventListener("click", () => {
+	disableConnectionControls();
+	connectToPeer(document.getElementById("peerId").value, true);
+});
+
+peer.on('call', handleCall);
+peer.on('connection', function(conn) {
+	disableConnectionControls();
+	connectToPeer(conn.peer, false);
+	conn.on('data', handleDataReceived);
+});
+
+document.getElementById("send").addEventListener("click", () => {
+	var messageElement = document.getElementById("message");
+	var message = myNick + ": " + messageElement.value;
+
+	document.getElementById("chat").value += message + "\n";
+
+	messageElement.value = null;
+	for(var peerId in connections) {
+		if(peerId != myPeerId) {
+				connections[peerId].data.send(message);
+		}
+	}
+});
+</script>
+</body>
+</html>
